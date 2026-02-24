@@ -1,7 +1,7 @@
 from vllm import LLM
 from datasets import load_dataset
 
-splits = [
+subsets = [
     "anatomy",
     "business_ethics",
     "clinical_knowledge",
@@ -34,23 +34,53 @@ splits = [
     "professional_law",
 ]
 
+def extract_answer(text):
+    pattern = r"answer is \(?([A-J])\)?"
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1)
+    else:
+        print("1st answer extract failed\n" + text)
+        return extract_again(text)
+
+
+def extract_again(text):
+    match = re.search(r'.*[aA]nswer:\s*([A-J])', text)
+    if match:
+        return match.group(1)
+    else:
+        return extract_final(text)
+
+
+def extract_final(text):
+    pattern = r"\b[A-J]\b(?!.*\b[A-J]\b)"
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(0)
+    else:
+        return None
+
 
 def main():
-    dataset = load_dataset("edinburgh-dawg/mmlu-redux", split=splits[0])
-    prompts = dataset["train"]["question"]
+    dataset = load_dataset("edinburgh-dawg/mmlu-redux", subsets[0], split="test")
 
     llm = LLM(
         model="Qwen/Qwen3-4B",
     )
-    prompts = [
-        "Hello, my name is",
-        "The president of the United States is",
-        "The capital of France is",
-        "The future of AI is",
-    ]
 
-    outputs = llm.generate(prompts)
-    print(outputs)
+    for example in dataset:
+        question = example["question"]
+        choices = example["choices"]
+        answer = example["answer"]
+        formatted_choices = ""
+        for i, choice in enumerate(choices):
+            formatted_choices += f"{chr(65 + i)}) {choice}\n"
+        prompt = f"Question: {question}\nOptions:\n{formatted_choices}Answer: Let's think step by step.\n\n"
+        responses = llm.generate(prompt, max_tokens=1024)
+        print(responses)
+        for response in responses:
+            for output in response.outputs:
+                print(output.text)
 
 
 if __name__ == "__main__":
