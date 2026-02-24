@@ -1,5 +1,6 @@
-from vllm import LLM
+from vllm import LLM, SamplingParams
 from datasets import load_dataset
+import re
 
 subsets = [
     "anatomy",
@@ -34,6 +35,7 @@ subsets = [
     "professional_law",
 ]
 
+
 def extract_answer(text):
     pattern = r"answer is \(?([A-J])\)?"
     match = re.search(pattern, text)
@@ -45,7 +47,7 @@ def extract_answer(text):
 
 
 def extract_again(text):
-    match = re.search(r'.*[aA]nswer:\s*([A-J])', text)
+    match = re.search(r".*[aA]nswer:\s*([A-J])", text)
     if match:
         return match.group(1)
     else:
@@ -61,27 +63,61 @@ def extract_final(text):
         return None
 
 
-def main():
-    dataset = load_dataset("edinburgh-dawg/mmlu-redux", subsets[0], split="test")
+def run_subset(subset_name, llm, sampling_params, batch_size=1):
+    """Run evaluation on a single subset. Returns (correct_count, total_count)."""
+    dataset = load_dataset("edinburgh-dawg/mmlu-redux", subset_name, split="test")
 
+    correct_count = 0
+    total_count = 0
+    for batch_start in range(0, len(dataset), batch_size):
+        batch = dataset[batch_start : batch_start + batch_size]
+        questions = batch["question"]
+        choices_list = batch["choices"]
+        answers = batch["answer"]
+        prompts = []
+        correct_letters = []
+        for i in range(len(questions)):
+            question = questions[i]
+            choices = choices_list[i]
+            correct_answer_idx = answers[i]
+            correct_answer_letter = chr(65 + correct_answer_idx)
+            correct_letters.append(correct_answer_letter)
+            formatted_choices = ""
+            for j, choice in enumerate(choices):
+                formatted_choices += f"{chr(65 + j)}) {choice}\n"
+            prompt = f"Question: {question}\nOptions:\n{formatted_choices}Answer: Let's think step by step.\n\n"
+            prompts.append(prompt)
+        responses = llm.generate(prompts, sampling_params=sampling_params)
+        for response, correct_answer_letter in zip(responses, correct_letters):
+            assert len(response.outputs) == 1
+            output = response.outputs[0]
+            answer = extract_answer(output.text)
+            if answer == correct_answer_letter:
+                correct_count += 1
+            total_count += 1
+            print(
+                f"[{subset_name}] [{total_count}] Correct: {correct_count}, Total: {total_count}, Accuracy: {correct_count / total_count}"
+            )
+    return correct_count, total_count
+
+
+def main(batch_size=1):
     llm = LLM(
         model="Qwen/Qwen3-4B",
     )
+    sampling_params = SamplingParams(max_tokens=512)
 
-    for example in dataset:
-        question = example["question"]
-        choices = example["choices"]
-        answer = example["answer"]
-        formatted_choices = ""
-        for i, choice in enumerate(choices):
-            formatted_choices += f"{chr(65 + i)}) {choice}\n"
-        prompt = f"Question: {question}\nOptions:\n{formatted_choices}Answer: Let's think step by step.\n\n"
-        responses = llm.generate(prompt, max_tokens=1024)
-        print(responses)
-        for response in responses:
-            for output in response.outputs:
-                print(output.text)
+    total_correct = 0
+    total_all = 0
+    for subset_name in subsets:
+        correct, total = run_subset(subset_name, llm, sampling_params, batch_size)
+        total_correct += correct
+        total_all += total
+
+    print(
+        f"\nOverall: Correct: {total_correct}, Total: {total_all}, Accuracy: {total_correct / total_all}"
+    )
 
 
 if __name__ == "__main__":
-    main()
+    main(batch_size=15)
